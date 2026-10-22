@@ -40,15 +40,34 @@ def main():
             users_data = service.list_users(group="*", limit=5, offset=0)
             print(f"Database Active Accounts Registered: {users_data['total']}")
                         # ─── USER KI REAL CLIENT ACCOUNT PIPELINE TESTING ───
-            print("\n--- Running Custom Client API Engine Call ---")
+        # Testing database connectivity
+        if service.connected():
+            print("\n--- Running Active Session Check ---")
+            users_data = service.list_users(group="*", limit=5, offset=0)
+            print(f"Database Active Accounts Registered: {users_data['total']}")
+
+            # ─── EXECUTE CUSTOM CLIENT API ROUTE (YOUR NEW ENTRYPOINT) ───
+            print("\n--- Triggering Custom Client API Trading Engine ---")
             
-            # Yahan server database par maujood kisi bhi 1 real client ka login ID daalein (e.g., 77084)
-            SAMPLE_CLIENT_ID = 77084  
+            # Aapka real validation client account variable
+            TARGET_CLIENT_LOGIN = 1239574056387  
             
-            client_profile = service.get_client_account_details(client_login=SAMPLE_CLIENT_ID)
-            print(f"👉 Target Client Balance: {client_profile['balance']} {client_profile['currency']}")
-            print(f"👉 Target Client Equity : {client_profile['equity']}")
-            print(f"👉 Target Client Leverage: 1:{client_profile['leverage']}")
+            try:
+                # Hum is client login ID par 0.1 Lot ka market BUY execute kar rahe hain
+                trade_receipt = service.execute_client_market_order(
+                    client_login=TARGET_CLIENT_LOGIN,
+                    symbol="EURUSD",  # Ya jo bhi commodity symbol aapke server par live ho
+                    volume=0.1,
+                    action_type="BUY"
+                )
+                print("=====================================================")
+                print(f"🎯 CLIENT API STATUS: Live Position Deployed!")
+                print(f"👉 Client Account Target : {trade_receipt['client']}")
+                print(f"👉 Order Specifications : {trade_receipt['action']} - {trade_receipt['volume']} Lot {trade_receipt['symbol']}")
+                print("=====================================================")
+                
+            except Exception as trade_err:
+                print(f"❌ Client API Operation Interrupted: {str(trade_err)}")
 
 
     except Exception as e:

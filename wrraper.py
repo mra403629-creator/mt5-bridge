@@ -182,3 +182,47 @@ class MT5Service:
                 "leverage": getattr(account_data, "Leverage", 0),
                 "currency": getattr(account_data, "Currency", "USD")
             }
+            
+      # =========================================================
+    # ROUTE B: CORRECTED CLIENT TRADING API ENGINE 
+    # =========================================================
+    def execute_client_market_order(self, client_login: int, symbol: str, volume: float, action_type: str = "BUY"):
+        """
+        Manager privileges ka use karke target client par order deploy karna.
+        Direct constructor block bypass karke request interface assign karna.
+        """
+        self._check_connection()
+
+        with self._lock:
+            # Direct static wrapper loading to avoid instantiation NULL error
+            try:
+                request = self.manager.RequestCreate()
+            except Exception:
+                # Agar internal factory interface binding accessible na ho
+                raise RuntimeError("MT5 Manager Request factory interface returned NULL. Check SDK library files.")
+
+            if not request:
+                raise RuntimeError("Failed to allocate memory for MTRequest structure.")
+            
+            # Parameters Mapping
+            request.Login = int(client_login)
+            request.Symbol = symbol
+            request.Volume = int(volume * 10000) 
+            
+            # Action Mapping
+            en_action = self.manager.EnTradeActions
+            if action_type.upper() == "BUY":
+                request.Action = getattr(en_action, "TA_PRICE_BUY", 0)
+            else:
+                request.Action = getattr(en_action, "TA_PRICE_SELL", 1)
+
+            print(f" Sending Verified Client Order [{action_type}] for Login: {client_login}...")
+            
+            # Execute standard execution pipeline
+            if not self.manager.UserRequest(request):
+                raise RuntimeError(f"Server rejected transaction entry: {self._last_error()}")
+            
+            print(f"✅ Trade Entry success for client: {client_login}")
+            return {"success": True, "client": client_login, "action": action_type}
+
+
