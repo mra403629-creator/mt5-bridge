@@ -1,4 +1,4 @@
-import math
+﻿import math
 import threading
 import MT5Manager
 
@@ -186,43 +186,27 @@ class MT5Service:
       # =========================================================
     # ROUTE B: CORRECTED CLIENT TRADING API ENGINE 
     # =========================================================
-    def execute_client_market_order(self, client_login: int, symbol: str, volume: float, action_type: str = "BUY"):
-        """
-        Manager privileges ka use karke target client par order deploy karna.
-        Direct constructor block bypass karke request interface assign karna.
-        """
+    def execute_client_market_order(self, client_login: int, symbol: str,
+                                volume: float, action_type: str = "BUY"):
         self._check_connection()
-
         with self._lock:
-            # Direct static wrapper loading to avoid instantiation NULL error
-            try:
-                request = self.manager.RequestCreate()
-            except Exception:
-                # Agar internal factory interface binding accessible na ho
-                raise RuntimeError("MT5 Manager Request factory interface returned NULL. Check SDK library files.")
+            request = MT5Manager.MTRequest(self.manager)
+            actions = MT5Manager.MTRequest.EnTradeActions
+            otypes = MT5Manager.MTOrder.EnOrderType
 
-            if not request:
-                raise RuntimeError("Failed to allocate memory for MTRequest structure.")
-            
-            # Parameters Mapping
             request.Login = int(client_login)
             request.Symbol = symbol
-            request.Volume = int(volume * 10000) 
-            
-            # Action Mapping
-            en_action = self.manager.EnTradeActions
-            if action_type.upper() == "BUY":
-                request.Action = getattr(en_action, "TA_PRICE_BUY", 0)
-            else:
-                request.Action = getattr(en_action, "TA_PRICE_SELL", 1)
+            request.Volume = int(volume * 10000)      # 1 lot = 10000
+            request.Action = actions.TA_DEALER_POS_EXECUTE
+            request.Type = otypes.OP_BUY if action_type.upper() == "BUY" else otypes.OP_SELL
 
-            print(f" Sending Verified Client Order [{action_type}] for Login: {client_login}...")
-            
-            # Execute standard execution pipeline
-            if not self.manager.UserRequest(request):
-                raise RuntimeError(f"Server rejected transaction entry: {self._last_error()}")
-            
-            print(f"✅ Trade Entry success for client: {client_login}")
+            try:
+                ok = self.manager.DealerSend(request, self._sink)
+            except Exception as exc:
+                raise RuntimeError(f"DealerSend failed: {exc!r} | {_last_error()}") from exc
+
+            if not ok:
+                raise RuntimeError(f"Server rejected order: {_last_error()}")
+
             return {"success": True, "client": client_login, "action": action_type}
-
 
