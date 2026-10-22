@@ -1,5 +1,4 @@
-﻿import math
-import threading
+﻿import threading
 import MT5Manager
 
 # =============================================================
@@ -7,7 +6,7 @@ import MT5Manager
 # =============================================================
 
 def _last_error() -> str:
-    """LastError() MT5Manager module ka function hai."""
+    """MT5Manager.LastError() ka readable text."""
     try:
         code, retcode, message = MT5Manager.LastError()
         return f"[{code}] {retcode} - {message}"
@@ -32,9 +31,68 @@ def _resolve_pump_mode(value):
         name = part if part.startswith("PUMP_MODE_") else f"PUMP_MODE_{part}"
         mode = getattr(modes, name, None)
         if mode is None:
-            return int(modes.PUMP_MODE_FULL) # Fallback to Full
+            return int(modes.PUMP_MODE_FULL)  # Fallback to Full
         result |= int(mode)
     return result
+
+
+def _search_roots():
+    """Jin classes/modules mein enum constants dhoondhne hain."""
+    roots = [MT5Manager]
+    for name in ("MTRequest", "MTOrder", "MTPosition", "MTDeal", "ManagerAPI"):
+        obj = getattr(MT5Manager, name, None)
+        if obj is not None:
+            roots.append(obj)
+    return roots
+
+
+def _find_const(names):
+    """
+    Constant (jaise TA_DEALER_POS_EXECUTE ya OP_BUY) ko MT5Manager ke andar
+    khud dhoondhta hai: direct attribute, ya kisi nested enum class ke andar.
+    Isse enum ka path galat hone par code nahi tootta.
+    """
+    if isinstance(names, str):
+        names = (names,)
+
+    for root in _search_roots():
+        for name in names:
+            if hasattr(root, name):
+                return getattr(root, name)
+        for attr in dir(root):
+            if attr.startswith("_"):
+                continue
+            try:
+                child = getattr(root, attr)
+            except Exception:
+                continue
+            for name in names:
+                try:
+                    if hasattr(child, name):
+                        return getattr(child, name)
+                except Exception:
+                    continue
+
+    raise AttributeError(
+        f"Constant {names} MT5Manager mein nahi mila. "
+        f"service.diagnose() chalakar output bhejein."
+    )
+
+
+class _DealerSink:
+    """Dealer ke jawab (result/answer) yahan aate hain."""
+
+    def __init__(self):
+        self.last = None
+        self.event = threading.Event()
+
+    def OnDealerResult(self, request, *args):
+        self.last = ("result", request)
+        self.event.set()
+
+    def OnDealerAnswer(self, request, *args):
+        self.last = ("answer", request)
+        self.event.set()
 
 
 class MT5Service:
@@ -43,7 +101,8 @@ class MT5Service:
         self.manager = None
         self._connected = False
         self._lock = threading.RLock()
-        self._sink = None   
+        self._sink = _DealerSink()
+        self._dealer_started = False
 
     def connected(self):
         return self._connected
@@ -90,6 +149,7 @@ class MT5Service:
 
             self.manager = manager
             self._connected = True
+            self._dealer_started = False
 
             return {
                 "connected": True,
@@ -106,6 +166,7 @@ class MT5Service:
                 pass
         self.manager = None
         self._connected = False
+        self._dealer_started = False
 
     def disconnect(self):
         with self._lock:
@@ -121,6 +182,38 @@ class MT5Service:
             return getattr(self.manager, method)(*args)
         except Exception:
             return None
+
+    # =========================================================
+    # DIAGNOSE (naam / enum check karne ke liye)
+    # =========================================================
+    def diagnose(self):
+        """Ye chalakar poora output bhej dein agar koi naam match na ho."""
+        print("--- ManagerAPI (Dealer/Order/Position/User) ---")
+        print([n for n in dir(MT5Manager.ManagerAPI)
+               if not n.startswith("_")
+               and any(k in n for k in ("Dealer", "Order", "Position", "User", "Request"))])
+        print("--- MTRequest fields ---")
+        print([n for n in dir(MT5Manager.MTRequest) if not n.startswith("_")])
+        print("--- Constants (TA_ / OP_ / ORDER_ / FILL) ---")
+        for root in _search_roots():
+            rname = getattr(root, "__name__", str(root))
+            for attr in dir(root):
+                if attr.startswith("_"):
+                    continue
+                try:
+                    child = getattr(root, attr)
+                except Exception:
+                    continue
+                if attr.startswith(("TA_", "OP_", "ORDER_", "FILL")):
+                    print(f"{rname}.{attr}")
+                else:
+                    try:
+                        inner = [n for n in dir(child)
+                                 if n.startswith(("TA_", "OP_", "ORDER_TYPE", "ORDER_FILL"))]
+                    except Exception:
+                        inner = []
+                    if inner:
+                        print(f"{rname}.{attr}: {inner}")
 
     # =========================================================
     # USERS LIST METHOD
@@ -141,12 +234,14 @@ class MT5Service:
         total = len(users_list)
         page = users_list[offset: offset + limit]
 
-        # Simple login parsing logic for response visualization
         parsed_users = []
         for u in page:
             try:
-                parsed_users.append({"Login": getattr(u, "Login", "N/A"), "Name": getattr(u, "Name", "N/A")})
-            except:
+                parsed_users.append({
+                    "Login": getattr(u, "Login", "N/A"),
+                    "Name": getattr(u, "Name", "N/A"),
+                })
+            except Exception:
                 pass
 
         return {
@@ -155,24 +250,23 @@ class MT5Service:
             "offset": offset,
             "users": parsed_users,
         }
+
     # =========================================================
-    # CUSTOM CLIENT API ENGINE (Via Manager Rights)
+    # CLIENT ACCOUNT DETAILS (Manager rights)
     # =========================================================
     def get_client_account_details(self, client_login: int):
-        """
-        Manager privileges ka use karke kisi bhi specific client ke account 
-        ki live analytics (Balance, Equity, Margin, Leverage) fetch karein.
-        """
         self._check_connection()
 
         with self._lock:
-            # Server se real-time target account specifications request karein
-            account_data = self._try("UserAccountRequest", int(client_login))
-            
+            account_data = self._try("UserAccountGet", int(client_login))
             if not account_data:
-                raise KeyError(f"Client Account {client_login} details could not be retrieved: {_last_error()}")
+                account_data = self._try("UserAccountRequest", int(client_login))
 
-            # Core dictionary mapping for client endpoints
+            if not account_data:
+                raise KeyError(
+                    f"Client Account {client_login} details could not be retrieved: {_last_error()}"
+                )
+
             return {
                 "login": getattr(account_data, "Login", client_login),
                 "balance": getattr(account_data, "Balance", 0.0),
@@ -180,33 +274,100 @@ class MT5Service:
                 "margin": getattr(account_data, "Margin", 0.0),
                 "margin_free": getattr(account_data, "MarginFree", 0.0),
                 "leverage": getattr(account_data, "Leverage", 0),
-                "currency": getattr(account_data, "Currency", "USD")
+                "currency": getattr(account_data, "Currency", "USD"),
             }
-            
-      # =========================================================
-    # ROUTE B: CORRECTED CLIENT TRADING API ENGINE 
+
+    # =========================================================
+    # DEALER START (agar module mein available ho)
+    # =========================================================
+    def _ensure_dealer(self):
+        if self._dealer_started:
+            return
+        start = getattr(self.manager, "DealerStart", None)
+        if start is None:
+            return  # is build mein DealerStart nahi hai, seedha DealerSend try hoga
+        for args in ((self._sink,), ()):
+            try:
+                start(*args)
+                self._dealer_started = True
+                return
+            except TypeError:
+                continue
+            except Exception as exc:
+                raise RuntimeError(f"DealerStart failed: {exc!r} | {_last_error()}") from exc
+
+    # =========================================================
+    # CLIENT MARKET ORDER (Dealer route)
     # =========================================================
     def execute_client_market_order(self, client_login: int, symbol: str,
-                                volume: float, action_type: str = "BUY"):
+                                    volume: float, action_type: str = "BUY"):
+        """
+        Client ke account par dealer ki taraf se market order.
+        Sirf DEMO account par 0.01 lot se test karein.
+        """
         self._check_connection()
+
         with self._lock:
-            request = MT5Manager.MTRequest(self.manager)
-            actions = MT5Manager.MTRequest.EnTradeActions
-            otypes = MT5Manager.MTOrder.EnOrderType
+            side = action_type.upper()
+            if side not in ("BUY", "SELL"):
+                raise ValueError("action_type 'BUY' ya 'SELL' hona chahiye.")
+
+            try:
+                request = MT5Manager.MTRequest(self.manager)
+            except Exception as exc:
+                raise RuntimeError(f"MTRequest create failed: {exc!r} | {_last_error()}") from exc
+
+            action = _find_const(("TA_DEALER_POS_EXECUTE",))
+            order_type = _find_const(("OP_BUY",) if side == "BUY" else ("OP_SELL",))
 
             request.Login = int(client_login)
             request.Symbol = symbol
-            request.Volume = int(volume * 10000)      # 1 lot = 10000
-            request.Action = actions.TA_DEALER_POS_EXECUTE
-            request.Type = otypes.OP_BUY if action_type.upper() == "BUY" else otypes.OP_SELL
+            request.Volume = int(round(volume * 10000))  # 1 lot = 10000
+            request.Action = action
+            request.Type = order_type
 
+            # Fill type optional hai, mile to set kar dete hain
             try:
-                ok = self.manager.DealerSend(request, self._sink)
-            except Exception as exc:
-                raise RuntimeError(f"DealerSend failed: {exc!r} | {_last_error()}") from exc
+                request.TypeFill = _find_const(("ORDER_FILL_IOC", "FILL_IOC"))
+            except Exception:
+                pass
+
+            self._ensure_dealer()
+            self._sink.event.clear()
+
+            ok = None
+            last_exc = None
+            for args in ((request, self._sink), (request,)):
+                try:
+                    ok = self.manager.DealerSend(*args)
+                    break
+                except TypeError as exc:
+                    last_exc = exc
+                    continue
+                except AttributeError as exc:
+                    raise RuntimeError(
+                        "Is MT5Manager build mein DealerSend nahi hai. "
+                        "service.diagnose() ka output bhejein."
+                    ) from exc
+                except Exception as exc:
+                    raise RuntimeError(f"DealerSend failed: {exc!r} | {_last_error()}") from exc
+
+            if ok is None and last_exc is not None:
+                raise RuntimeError(f"DealerSend signature mismatch: {last_exc!r}") from last_exc
 
             if not ok:
                 raise RuntimeError(f"Server rejected order: {_last_error()}")
 
-            return {"success": True, "client": client_login, "action": action_type}
+            # Dealer jawab ka thoda intezaar (agar sink se aaye)
+            self._sink.event.wait(3)
 
+        return {
+                "success": True,
+                "client": client_login,
+                "login": client_login,
+                "symbol": symbol,
+                "volume": volume,
+                "action": side,
+                "type": side,
+                "dealer_reply": self._sink.last[0] if self._sink.last else "no callback received",
+            }
