@@ -1,82 +1,78 @@
 import os
 import sys
+import threading
+import time
 from dotenv import load_dotenv
 
-# Path synchronization
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-# Load variables from .env
 load_dotenv()
 
-# Import the class engine we updated above
 from wrraper import MT5Service  
+from client_api import MT5ClientAPI  # Import our new C++ client engine layer
+
+def start_cpp_bridge_listener(client_api_instance):
+    """Real time thread logs read filters."""
+    while True:
+        try:
+            event_data = client_api_instance.read_event()
+            if event_data and event_data != "ERROR_READ_FAILED":
+                print(f"📡 [C++ Live Tick Stream]: {event_data}")
+            if event_data == "BRIDGE_OFFLINE":
+                break
+        except:
+            break
+        time.sleep(0.1)
 
 def main():
-    # Read variables from your live .env setup
+    # ─── SECTION 1: REGULAR MANAGER SERVER CONNECTIVITY ───
     SERVER_IP = os.getenv("MT5_SERVER")
     MANAGER_LOGIN = os.getenv("MT5_LOGIN")
     MANAGER_PASSWORD = os.getenv("MT5_PASSWORD")
     PUMP_MODE = os.getenv("LIVE_PUMP", "FULL")
 
     print("🚀 Initializing MT5 Enterprise Manager API Layer...")
-    service = MT5Service()
+    manager_service = MT5Service()
 
     try:
-        print(f"🔗 Connecting securely to: {SERVER_IP} using Manager ID: {MANAGER_LOGIN}...")
-        
-        # Real-time handshake request to MT5 Hosting Server
-        connection_result = service.connect(
-            server=SERVER_IP,
-            login=int(MANAGER_LOGIN),
-            password=MANAGER_PASSWORD,
-            pump_mode=PUMP_MODE
+        connection_result = manager_service.connect(
+            server=SERVER_IP, login=int(MANAGER_LOGIN), password=MANAGER_PASSWORD, pump_mode=PUMP_MODE
         )
-        print("✅ Secure Connection Established Successfully!")
-        print(f"Server System State: {connection_result}")
+        print("✅ Manager API Connection Established Successfully!")
+        
+        if manager_service.connected():
+            users_data = manager_service.list_users(group="*", limit=5, offset=0)
+            print(f"📊 Database Active Accounts Registered: {users_data['total']}")
 
-        # Live data pipeline testing check
-        if service.connected():
-            print("\n--- Running Active Session Check ---")
-            users_data = service.list_users(group="*", limit=5, offset=0)
-            print(f"Database Active Accounts Registered: {users_data['total']}")
-                        # ─── USER KI REAL CLIENT ACCOUNT PIPELINE TESTING ───
-        # Testing database connectivity
-        if service.connected():
-            print("\n--- Running Active Session Check ---")
-            users_data = service.list_users(group="*", limit=5, offset=0)
-            print(f"Database Active Accounts Registered: {users_data['total']}")
-
-            # ─── EXECUTE CUSTOM CLIENT API ROUTE (YOUR NEW ENTRYPOINT) ───
-            print("\n--- Triggering Custom Client API Trading Engine ---")
+        # ─── SECTION 2: CLIENT API (C++ DLL BRIDGE TRIGGER) ───
+        print("\n⚡ Initializing Custom C++ Client API Bridge Mechanism...")
+        client_api = MT5ClientAPI(pipe_name="MT5_Python_Bridge")
+        
+        # Yeh function connection aane tak execution block rakhega (EA load hona zaroori h)
+        if client_api.start_bridge():
             
-            # Aapka real validation client account variable
-            TARGET_CLIENT_LOGIN = 1239574056387  
+            # Tick alerts monitoring ke liye extra parallel thread trigger karein
+            listener_thread = threading.Thread(target=start_cpp_bridge_listener, args=(client_api,), daemon=True)
+            listener_thread.start()
             
-            try:
-                # Hum is client login ID par 0.1 Lot ka market BUY execute kar rahe hain
-                trade_receipt = service.execute_client_market_order(
-                    client_login=TARGET_CLIENT_LOGIN,
-                    symbol="EURUSD",  # Ya jo bhi commodity symbol aapke server par live ho
-                    volume=0.1,
-                    action_type="BUY"
-                )
-                print("=====================================================")
-                print(f"🎯 CLIENT API STATUS: Live Position Deployed!")
-                print(f"👉 Client Account Target : {trade_receipt['client']}")
-                print(f"👉 Order Specifications : {trade_receipt['action']} - {trade_receipt['volume']} Lot {trade_receipt['symbol']}")
-                print("=====================================================")
-                
-            except Exception as trade_err:
-                print(f"❌ Client API Operation Interrupted: {str(trade_err)}")
-
+            # Real Time Target client transaction execution trigger karke check karein
+            print("\n--- Sending Execution Alerts to Client Chart Terminal ---")
+            TARGET_CLIENT_LOGIN = 1239574056387
+            
+            # Custom execution commands parsing string via Named Pipe inside C++ DLL
+            client_api.send_action(f"BUY_ORDER:LOGIN={TARGET_CLIENT_LOGIN}:SYMBOL=EURUSD:VOL=0.1")
+            
+            # Core session active status loop check (5 seconds preview logs tracking)
+            time.sleep(5)
+            
+            client_api.shutdown()
 
     except Exception as e:
-        print(f"\n❌ Server Connection Failed: {str(e)}")
+        print(f"\n❌ Infrastructure Interrupted: {str(e)}")
     
     finally:
-        if service.connected():
-            service.disconnect()
-            print("\n🔒 Connection closed safely.")
+        if manager_service.connected():
+            manager_service.disconnect()
+            print("🔒 Manager core session closed safely.")
 
 if __name__ == "__main__":
     main()

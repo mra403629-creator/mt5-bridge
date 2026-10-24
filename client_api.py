@@ -238,6 +238,10 @@ class MT5ClientSession:
             } for d in deals]
 
 
+# run_service.py is naam se import karta hai
+MT5ClientAPI = MT5ClientSession
+
+
 # =============================================================
 # QUICK TEST   ->   python client_api.py
 # =============================================================
@@ -250,13 +254,13 @@ if __name__ == "__main__":
         print("CONNECT:", s.connect(
             login=int(os.getenv("CLIENT_LOGIN")),
             password=os.getenv("CLIENT_PASSWORD"),
-            server=os.getenv("MT5_SERVER"),
+            server=os.getenv("CLIENT_SERVER") or os.getenv("MT5_SERVER"),
             terminal_path=os.getenv("MT5_TERMINAL_PATH"),
         ))
         print("ACCOUNT:", s.account())
         print("POSITIONS:", s.positions())
 
         # Order test: sirf DEMO account par, comment hata kar chalayein
-        print("ORDER:", s.open_order("EURUSD", 0.01, "BUY"))
+        # print("ORDER:", s.open_order("EURUSD", 0.01, "BUY"))
     finally:
         s.disconnect()
